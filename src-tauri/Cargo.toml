@@ -4,6 +4,12 @@ version = "0.0.1"
 description = "CircuitFlow Desktop App"
 authors = []
 edition = "2021"
+default-run = "circuit-flow"
+
+[lib]
+name = "circuit_flow_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+path = "src/lib.rs"
 
 [[bin]]
 name = "circuit-flow"
