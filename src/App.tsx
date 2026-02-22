@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { useAuthStore } from "@/store/authStore";
+import { useProjectStore } from "@/store/projectStore";
 import AuthScreen from "@/screens/AuthScreen";
+import ProjectDashboard from "@/screens/ProjectDashboard";
 import CircuitPanel from "@/panels/CircuitPanel";
 import LogicPanel from "@/panels/LogicPanel";
 import SimulatePanel from "@/panels/SimulatePanel";
@@ -24,7 +26,6 @@ function LoadingScreen() {
 
 function MainApp() {
   const [activePanel, setActivePanel] = useState<Panel>("circuit");
-
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100 overflow-hidden">
       <TopNav activePanel={activePanel} setActivePanel={setActivePanel} />
@@ -41,6 +42,7 @@ function MainApp() {
 
 export default function App() {
   const { user, initialized, initialize } = useAuthStore();
+  const { currentProject } = useProjectStore();
 
   useEffect(() => {
     initialize();
@@ -48,5 +50,6 @@ export default function App() {
 
   if (!initialized) return <LoadingScreen />;
   if (!user) return <AuthScreen />;
+  if (!currentProject) return <ProjectDashboard />;
   return <MainApp />;
 }

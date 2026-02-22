@@ -20,6 +20,8 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useCircuitStore } from "@/store/circuitStore";
+import { useProjectStore } from "@/store/projectStore";
+import { saveProject } from "@/lib/projectService";
 import { PlacedComponent } from "@/types/circuit";
 import ComponentSidebar from "@/components/circuit/ComponentSidebar";
 import PropertiesPanel from "@/components/circuit/PropertiesPanel";
@@ -55,26 +57,63 @@ interface CtxMenu {
   flowPos?: { x: number; y: number };
 }
 
+// ── Strip non-serializable data before saving ─────────────────────────────────
+function serializeNodes(nodes: Node[]): Node[] {
+  return nodes.map((n) => {
+    if (n.type === "commentNode") {
+      const { onDelete, onTextChange, ...rest } = n.data as any;
+      return { ...n, data: rest };
+    }
+    return n;
+  });
+}
+
+// ── Restore callbacks after loading ──────────────────────────────────────────
+function restoreNodes(nodes: Node[], setNodes: (fn: (nds: Node[]) => Node[]) => void): Node[] {
+  return nodes.map((n) => {
+    if (n.type === "commentNode") {
+      return {
+        ...n,
+        data: {
+          ...n.data,
+          onDelete: (nodeId: string) => {
+            setNodes((nds) => nds.filter((nd) => nd.id !== nodeId));
+          },
+          onTextChange: (nodeId: string, text: string) => {
+            setNodes((nds) =>
+              nds.map((nd) =>
+                nd.id === nodeId ? { ...nd, data: { ...nd.data, text } } : nd
+              )
+            );
+          },
+        },
+      };
+    }
+    return n;
+  });
+}
+
 function CircuitCanvas() {
   const { addComponent, selectComponent } = useCircuitStore();
+  const { currentProject, setCurrentProject } = useProjectStore();
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const { screenToFlowPosition, fitView, zoomIn, zoomOut, setNodes: rfSetNodes } = useReactFlow();
+  const { screenToFlowPosition, fitView, zoomIn, zoomOut } = useReactFlow();
 
   // Toolbar state
-  const [toolMode, setToolMode]   = useState<ToolMode>("select");
-  const [showGrid, setShowGrid]   = useState(true);
-  const [snapGrid, setSnapGrid]   = useState(true);
-  const [saving, setSaving]       = useState(false);
+  const [toolMode, setToolMode]     = useState<ToolMode>("select");
+  const [showGrid, setShowGrid]     = useState(true);
+  const [snapGrid, setSnapGrid]     = useState(true);
+  const [saving, setSaving]         = useState(false);
   const [validating, setValidating] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
 
   // Undo/Redo history
-  const [history, setHistory]     = useState<{ nodes: Node[]; edges: Edge[] }[]>([]);
-  const [future, setFuture]       = useState<{ nodes: Node[]; edges: Edge[] }[]>([]);
+  const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([]);
+  const [future, setFuture]   = useState<{ nodes: Node[]; edges: Edge[] }[]>([]);
 
   // Context menu
-  const [ctxMenu, setCtxMenu]     = useState<CtxMenu | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
 
   // Clipboard
   const [clipboard, setClipboard] = useState<Node[]>([]);
@@ -89,6 +128,23 @@ function CircuitCanvas() {
   useOnSelectionChange({
     onChange: ({ nodes }) => setSelectedNodes(nodes),
   });
+
+  // ── Load canvas when project opens ───────────────────────────────────────
+  useEffect(() => {
+    if (!currentProject) return;
+
+    const savedNodes = (currentProject.canvas_nodes ?? []) as Node[];
+    const savedEdges = (currentProject.canvas_edges ?? []) as Edge[];
+
+    // Restore non-serializable callbacks
+    const restored = restoreNodes(savedNodes, setNodes);
+    setNodes(restored);
+    setEdges(savedEdges);
+
+    // Reset history when switching projects
+    setHistory([]);
+    setFuture([]);
+  }, [currentProject?.id]);
 
   // ── History helpers ───────────────────────────────────────────────────────
   const pushHistory = useCallback((n: Node[], e: Edge[]) => {
@@ -167,20 +223,19 @@ function CircuitCanvas() {
 
   // ── Delete selected ───────────────────────────────────────────────────────
   const deleteSelected = useCallback(() => {
-        const selectedNodeIds = new Set(selectedNodes.map((n) => n.id));
-        const selectedEdgeIds = new Set(edges.filter((e) => e.selected).map((e) => e.id));
+    const selectedNodeIds = new Set(selectedNodes.map((n) => n.id));
+    const selectedEdgeIds = new Set(edges.filter((e) => e.selected).map((e) => e.id));
 
-        if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return;
+    if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return;
 
-        pushHistory(nodes, edges);
-
-        setNodes((nds) => nds.filter((n) => !selectedNodeIds.has(n.id)));
-        setEdges((eds) => eds.filter(
-          (e) => !selectedEdgeIds.has(e.id)
-               && !selectedNodeIds.has(e.source)
-               && !selectedNodeIds.has(e.target)
-        ));
-    }, [selectedNodes, nodes, edges, setNodes, setEdges, pushHistory]);
+    pushHistory(nodes, edges);
+    setNodes((nds) => nds.filter((n) => !selectedNodeIds.has(n.id)));
+    setEdges((eds) => eds.filter(
+      (e) => !selectedEdgeIds.has(e.id)
+           && !selectedNodeIds.has(e.source)
+           && !selectedNodeIds.has(e.target)
+    ));
+  }, [selectedNodes, nodes, edges, setNodes, setEdges, pushHistory]);
 
   // ── Add comment ───────────────────────────────────────────────────────────
   const addComment = useCallback((color: string, position?: { x: number; y: number }) => {
@@ -230,18 +285,32 @@ function CircuitCanvas() {
 
   // ── Save ──────────────────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {
+    if (!currentProject) return;
     setSaving(true);
-    // TODO: wire to Supabase projects table
-    await new Promise((r) => setTimeout(r, 800));
-    setSaving(false);
-  }, []);
+    try {
+      await saveProject(currentProject.id, serializeNodes(nodes), edges);
+    } catch (e) {
+      console.error("Save failed:", e);
+    } finally {
+      setSaving(false);
+    }
+  }, [currentProject, nodes, edges]);
+
+  // ── Auto-save every 30 seconds ────────────────────────────────────────────
+  useEffect(() => {
+    if (!currentProject) return;
+    const interval = setInterval(() => {
+      saveProject(currentProject.id, serializeNodes(nodes), edges)
+        .catch(console.error);
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [currentProject, nodes, edges]);
 
   // ── Validate ─────────────────────────────────────────────────────────────
   const handleValidate = useCallback(async () => {
     setValidating(true);
     await new Promise((r) => setTimeout(r, 600));
     setValidating(false);
-    // TODO: real validation logic
   }, []);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
@@ -345,6 +414,8 @@ function CircuitCanvas() {
         onValidate={handleValidate}
         onSave={handleSave}
         onShowShortcuts={() => setShowShortcuts(true)}
+        onOpenDashboard={() => setCurrentProject(null)}
+        projectName={currentProject?.name ?? "Untitled"}
         saving={saving}
         validating={validating}
       />

@@ -2,7 +2,8 @@ import { useState } from "react";
 import {
   Undo2, Redo2, MousePointer2, Hand, MessageSquarePlus,
   Tag, Grid3X3, Magnet, Maximize2, ZoomIn, ZoomOut,
-  ShieldCheck, Save, Keyboard, ChevronDown, Loader2
+  ShieldCheck, Save, Keyboard, ChevronDown, Loader2,
+  CircuitBoard, ChevronRight
 } from "lucide-react";
 import { clsx } from "clsx";
 
@@ -42,6 +43,8 @@ interface CircuitToolbarProps {
   onValidate: () => void;
   onSave: () => void;
   onShowShortcuts: () => void;
+  onOpenDashboard: () => void;
+  projectName: string;
   saving: boolean;
   validating: boolean;
 }
@@ -54,12 +57,29 @@ export default function CircuitToolbar({
   onFitView, onZoomIn, onZoomOut,
   onAddComment,
   onValidate, onSave, onShowShortcuts,
+  onOpenDashboard, projectName,
   saving, validating,
 }: CircuitToolbarProps) {
   const [commentMenuOpen, setCommentMenuOpen] = useState(false);
 
   return (
     <div className="h-9 bg-slate-900 border-b border-slate-700/80 flex items-center px-3 gap-1 shrink-0 select-none">
+
+      {/* Project breadcrumb */}
+      <button
+        onClick={onOpenDashboard}
+        className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300 transition-colors mr-1"
+        title="Back to projects"
+      >
+        <CircuitBoard size={13} />
+        <span className="text-[11px]">Projects</span>
+      </button>
+      <ChevronRight size={11} className="text-slate-600 shrink-0" />
+      <span className="text-[11px] font-medium text-slate-300 max-w-32 truncate mx-1">
+        {projectName}
+      </span>
+
+      <Divider />
 
       {/* Undo / Redo */}
       <ToolGroup>
