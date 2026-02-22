@@ -1,14 +1,28 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useAuthStore } from "@/store/authStore";
+import AuthScreen from "@/screens/AuthScreen";
 import CircuitPanel from "@/panels/CircuitPanel";
 import LogicPanel from "@/panels/LogicPanel";
 import SimulatePanel from "@/panels/SimulatePanel";
 import CodePanel from "@/panels/CodePanel";
 import StatusBar from "@/components/StatusBar";
 import TopNav from "@/components/TopNav";
+import { Loader2 } from "lucide-react";
 
 export type Panel = "circuit" | "logic" | "simulate" | "code";
 
-function App() {
+function LoadingScreen() {
+  return (
+    <div className="h-screen bg-slate-950 flex items-center justify-center">
+      <div className="flex flex-col items-center gap-3">
+        <Loader2 size={32} className="text-blue-500 animate-spin" />
+        <p className="text-slate-500 text-sm">Loading CircuitFlow...</p>
+      </div>
+    </div>
+  );
+}
+
+function MainApp() {
   const [activePanel, setActivePanel] = useState<Panel>("circuit");
 
   return (
@@ -25,4 +39,14 @@ function App() {
   );
 }
 
-export default App;
+export default function App() {
+  const { user, initialized, initialize } = useAuthStore();
+
+  useEffect(() => {
+    initialize();
+  }, []);
+
+  if (!initialized) return <LoadingScreen />;
+  if (!user) return <AuthScreen />;
+  return <MainApp />;
+}
