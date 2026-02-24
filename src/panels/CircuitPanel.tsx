@@ -34,6 +34,8 @@ import ContextMenu, {
   wireContextItems,
 } from "@/components/circuit/ContextMenu";
 import ShortcutsModal from "@/components/circuit/ShortcutsModal";
+import ValidationPanel from "@/components/circuit/ValidationPanel";
+import { validateCircuit, ValidationResult } from "@/lib/validateCircuit";
 import { DnDProvider, useDnD } from "@/context/DnDContext";
 
 // ── Node types — must be defined outside the component ───────────────────────
@@ -69,7 +71,10 @@ function serializeNodes(nodes: Node[]): Node[] {
 }
 
 // ── Restore callbacks after loading ──────────────────────────────────────────
-function restoreNodes(nodes: Node[], setNodes: (fn: (nds: Node[]) => Node[]) => void): Node[] {
+function restoreNodes(
+  nodes: Node[],
+  setNodes: (fn: (nds: Node[]) => Node[]) => void
+): Node[] {
   return nodes.map((n) => {
     if (n.type === "commentNode") {
       return {
@@ -108,6 +113,9 @@ function CircuitCanvas() {
   const [validating, setValidating] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
 
+  // Validation
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+
   // Undo/Redo history
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([]);
   const [future, setFuture]   = useState<{ nodes: Node[]; edges: Edge[] }[]>([]);
@@ -132,19 +140,20 @@ function CircuitCanvas() {
   // ── Load canvas when project opens ───────────────────────────────────────
   useEffect(() => {
     if (!currentProject) return;
-
     const savedNodes = (currentProject.canvas_nodes ?? []) as Node[];
     const savedEdges = (currentProject.canvas_edges ?? []) as Edge[];
-
-    // Restore non-serializable callbacks
     const restored = restoreNodes(savedNodes, setNodes);
     setNodes(restored);
     setEdges(savedEdges);
-
-    // Reset history when switching projects
     setHistory([]);
     setFuture([]);
+    setValidationResult(null);
   }, [currentProject?.id]);
+
+  // ── Clear validation when canvas changes ─────────────────────────────────
+  useEffect(() => {
+    setValidationResult(null);
+  }, [nodes.length, edges.length]);
 
   // ── History helpers ───────────────────────────────────────────────────────
   const pushHistory = useCallback((n: Node[], e: Edge[]) => {
@@ -225,9 +234,7 @@ function CircuitCanvas() {
   const deleteSelected = useCallback(() => {
     const selectedNodeIds = new Set(selectedNodes.map((n) => n.id));
     const selectedEdgeIds = new Set(edges.filter((e) => e.selected).map((e) => e.id));
-
     if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return;
-
     pushHistory(nodes, edges);
     setNodes((nds) => nds.filter((n) => !selectedNodeIds.has(n.id)));
     setEdges((eds) => eds.filter(
@@ -283,6 +290,13 @@ function CircuitCanvas() {
     setNodes((nds) => nds.map((n) => ({ ...n, selected: true })));
   }, [setNodes]);
 
+  // ── Highlight node (from validation) ─────────────────────────────────────
+  const highlightNode = useCallback((nodeId: string) => {
+    setNodes((nds) =>
+      nds.map((n) => ({ ...n, selected: n.id === nodeId }))
+    );
+  }, [setNodes]);
+
   // ── Save ──────────────────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {
     if (!currentProject) return;
@@ -309,9 +323,11 @@ function CircuitCanvas() {
   // ── Validate ─────────────────────────────────────────────────────────────
   const handleValidate = useCallback(async () => {
     setValidating(true);
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, 300));
+    const result = validateCircuit(nodes, edges);
+    setValidationResult(result);
     setValidating(false);
-  }, []);
+  }, [nodes, edges]);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
@@ -337,7 +353,11 @@ function CircuitCanvas() {
       if (e.key === "?")                        setShowShortcuts((v) => !v);
       if (e.key === "=" || e.key === "+")       zoomIn();
       if (e.key === "-")                        zoomOut();
-      if (e.key === "Escape")                   { setCtxMenu(null); setShowShortcuts(false); }
+      if (e.key === "Escape") {
+        setCtxMenu(null);
+        setShowShortcuts(false);
+        setValidationResult(null);
+      }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
@@ -467,6 +487,15 @@ function CircuitCanvas() {
               y={ctxMenu.y}
               items={ctxMenuItems()}
               onClose={() => setCtxMenu(null)}
+            />
+          )}
+
+          {/* Validation panel — overlays bottom of canvas */}
+          {validationResult && (
+            <ValidationPanel
+              result={validationResult}
+              onClose={() => setValidationResult(null)}
+              onHighlightNode={highlightNode}
             />
           )}
         </div>
