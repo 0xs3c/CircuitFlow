@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -7,72 +7,165 @@ import {
   ReactFlowProvider,
   useNodesState,
   useEdgesState,
+  useReactFlow,
+  addEdge,
   Node,
   Edge,
+  Connection,
+  MarkerType,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useProjectStore } from "@/store/projectStore";
 import { saveLogicFlows } from "@/lib/projectService";
 import { extractHardwareMap } from "@/lib/hardwareMap";
-import { HardwareMap, McuHardware, LogicFlow } from "@/types/logic";
+import { HardwareMap, McuHardware, LogicFlow, LogicNodeType, LogicNodeData } from "@/types/logic";
 import { Cpu, AlertTriangle } from "lucide-react";
 import { clsx } from "clsx";
+import LogicNode from "@/components/logic/LogicNode";
+import LogicPalette from "@/components/logic/LogicPalette";
+import { LogicDnDProvider, useLogicDnD } from "@/context/LogicDnDContext";
 
-const MCU_ACCENT: Record<string, string> = {
-  default:  "border-blue-500 text-blue-400",
-  active:   "bg-blue-600 text-white border-blue-600",
+const nodeTypes = { logicNode: LogicNode };
+
+const defaultEdgeOptions = {
+  type: "smoothstep" as const,
+  markerEnd: { type: MarkerType.ArrowClosed, color: "#475569" },
+  style: { stroke: "#475569", strokeWidth: 2 },
 };
 
-function EmptyCanvas() {
-  return (
-    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-      <div className="flex flex-col items-center gap-3 text-slate-600">
-        <Cpu size={48} />
-        <p className="text-sm">Drag nodes from the left panel to build your firmware flow</p>
-      </div>
-    </div>
-  );
-}
+const DEFAULT_NODE_DATA: Record<LogicNodeType, Partial<LogicNodeData>> = {
+  on_start:        { nodeType: "on_start" },
+  on_loop:         { nodeType: "on_loop" },
+  on_timer:        { nodeType: "on_timer",        intervalMs: 1000 },
+  on_interrupt:    { nodeType: "on_interrupt",     mcuPinId: "", mcuPinName: "", trigger: "rising" },
+  read_sensor:     { nodeType: "read_sensor",      componentNodeId: "", componentName: "", readProperty: "", outputVariable: "value" },
+  read_pin:        { nodeType: "read_pin",         mcuPinId: "", mcuPinName: "", outputVariable: "pin_state" },
+  condition:       { nodeType: "condition",        variableName: "", operator: ">", compareValue: "0" },
+  wait:            { nodeType: "wait",             durationMs: 1000 },
+  loop_count:      { nodeType: "loop_count",       count: 10 },
+  loop_while:      { nodeType: "loop_while",       variableName: "", operator: ">", compareValue: "0" },
+  set_variable:    { nodeType: "set_variable",     variableName: "my_var", valueSource: "literal", rawValue: "0" },
+  set_pin:         { nodeType: "set_pin",          mcuPinId: "", mcuPinName: "", state: "HIGH" },
+  write_component: { nodeType: "write_component",  componentNodeId: "", componentName: "", action: "", valueSource: "literal", rawValue: "0" },
+  send_uart:       { nodeType: "send_uart",        txPinId: "", txPinName: "", targetMcuNodeId: null, dataTemplate: "" },
+  receive_uart:    { nodeType: "receive_uart",     rxPinId: "", rxPinName: "", outputVariable: "received" },
+};
 
 interface McuFlowCanvasProps {
-  mcu: McuHardware;
-  flow: LogicFlow;
+  mcu:          McuHardware;
+  flow:         LogicFlow;
   onFlowChange: (mcuNodeId: string, nodes: Node[], edges: Edge[]) => void;
 }
 
 function McuFlowCanvas({ mcu, flow, onFlowChange }: McuFlowCanvasProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState(flow.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(flow.edges);
+  const { screenToFlowPosition }         = useReactFlow();
+  const canvasRef                        = useRef<HTMLDivElement>(null);
+  const { isDragging, draggedNodeType, setIsDragging, setDraggedNodeType } = useLogicDnD();
 
   useEffect(() => {
     setNodes(flow.nodes);
     setEdges(flow.edges);
   }, [mcu.circuitNodeId]);
 
+  const notify = useCallback(
+    (n: Node[], e: Edge[]) => onFlowChange(mcu.circuitNodeId, n, e),
+    [mcu.circuitNodeId, onFlowChange]
+  );
+
+  // Same pattern as CircuitPanel — mouseup on window, check bounds
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const onMouseUp = (e: MouseEvent) => {
+      if (!draggedNodeType || !canvasRef.current) {
+        setIsDragging(false);
+        setDraggedNodeType(null);
+        return;
+      }
+
+      const bounds = canvasRef.current.getBoundingClientRect();
+      const over =
+        e.clientX >= bounds.left && e.clientX <= bounds.right &&
+        e.clientY >= bounds.top  && e.clientY <= bounds.bottom;
+
+      if (over) {
+        const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+        const newNode: Node = {
+          id:       `${draggedNodeType}-${Date.now()}`,
+          type:     "logicNode",
+          position,
+          data:     { ...DEFAULT_NODE_DATA[draggedNodeType] } as unknown as LogicNodeData,
+        };
+        setNodes((nds) => {
+          const next = [...nds, newNode];
+          notify(next, edges);
+          return next;
+        });
+      }
+
+      setIsDragging(false);
+      setDraggedNodeType(null);
+    };
+
+    window.addEventListener("mouseup", onMouseUp);
+    return () => window.removeEventListener("mouseup", onMouseUp);
+  }, [isDragging, draggedNodeType, edges, screenToFlowPosition, notify, setIsDragging, setDraggedNodeType]);
+
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      const isYes = connection.sourceHandle === "yes";
+      const isNo  = connection.sourceHandle === "no";
+      const edgeStyle = isYes
+        ? { stroke: "#10b981", strokeWidth: 2 }
+        : isNo
+        ? { stroke: "#ef4444", strokeWidth: 2 }
+        : { stroke: "#475569", strokeWidth: 2 };
+
+      setEdges((eds) => {
+        const next = addEdge(
+          {
+            ...connection,
+            type: "smoothstep",
+            markerEnd: { type: MarkerType.ArrowClosed },
+            style: edgeStyle,
+          },
+          eds
+        );
+        notify(nodes, next);
+        return next;
+      });
+    },
+    [nodes, notify]
+  );
+
   const handleNodesChange = useCallback(
     (changes: any) => {
       onNodesChange(changes);
-      onFlowChange(mcu.circuitNodeId, nodes, edges);
+      notify(nodes, edges);
     },
-    [nodes, edges, mcu.circuitNodeId]
+    [nodes, edges, notify]
   );
 
   const handleEdgesChange = useCallback(
     (changes: any) => {
       onEdgesChange(changes);
-      onFlowChange(mcu.circuitNodeId, nodes, edges);
+      notify(nodes, edges);
     },
-    [nodes, edges, mcu.circuitNodeId]
+    [nodes, edges, notify]
   );
 
   return (
-    <div className="relative w-full h-full">
-      {nodes.length === 0 && <EmptyCanvas />}
+    <div ref={canvasRef} style={{ width: "100%", height: "100%" }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
+        nodeTypes={nodeTypes}
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
+        onConnect={onConnect}
+        defaultEdgeOptions={defaultEdgeOptions}
         fitView
         proOptions={{ hideAttribution: true }}
       >
@@ -98,19 +191,17 @@ function LogicPanelInner() {
       currentProject.canvas_edges
     );
     setHardwareMap(map);
-
     if (map.mcus.length === 0) return;
 
     const existingFlows = currentProject.logic_flows ?? [];
-
     const merged: LogicFlow[] = map.mcus.map((mcu) => {
       const existing = existingFlows.find((f) => f.mcuNodeId === mcu.circuitNodeId);
       return existing ?? {
-        mcuNodeId:  mcu.circuitNodeId,
-        mcuName:    mcu.name,
-        nodes:      [],
-        edges:      [],
-        variables:  [],
+        mcuNodeId: mcu.circuitNodeId,
+        mcuName:   mcu.name,
+        nodes:     [],
+        edges:     [],
+        variables: [],
       };
     });
 
@@ -124,21 +215,19 @@ function LogicPanelInner() {
 
   const handleFlowChange = useCallback(
     async (mcuNodeId: string, nodes: Node[], edges: Edge[]) => {
-      const updated = flows.map((f) =>
-        f.mcuNodeId === mcuNodeId ? { ...f, nodes, edges } : f
-      );
-      setFlows(updated);
-      updateLogicFlows(updated);
-
-      if (!currentProject) return;
-      setSaving(true);
-      try {
-        await saveLogicFlows(currentProject.id, updated);
-      } finally {
-        setSaving(false);
-      }
+      setFlows((prev) => {
+        const updated = prev.map((f) =>
+          f.mcuNodeId === mcuNodeId ? { ...f, nodes, edges } : f
+        );
+        updateLogicFlows(updated);
+        if (currentProject) {
+          setSaving(true);
+          saveLogicFlows(currentProject.id, updated).finally(() => setSaving(false));
+        }
+        return updated;
+      });
     },
-    [flows, currentProject, updateLogicFlows]
+    [currentProject, updateLogicFlows]
   );
 
   if (!currentProject) {
@@ -166,7 +255,6 @@ function LogicPanelInner() {
 
   return (
     <div className="h-full flex flex-col">
-      {/* MCU tab bar */}
       <div className="h-10 bg-slate-900 border-b border-slate-700 flex items-center gap-1 px-3 shrink-0">
         <span className="text-xs text-slate-500 mr-2">MCU:</span>
         {hardwareMap.mcus.map((mcu) => (
@@ -176,8 +264,8 @@ function LogicPanelInner() {
             className={clsx(
               "flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium border transition-all",
               activeMcuId === mcu.circuitNodeId
-                ? MCU_ACCENT.active
-                : MCU_ACCENT.default
+                ? "bg-blue-600 text-white border-blue-600"
+                : "border-blue-500 text-blue-400 hover:bg-blue-950"
             )}
           >
             <Cpu size={11} />
@@ -189,19 +277,9 @@ function LogicPanelInner() {
         )}
       </div>
 
-      {/* Main workspace */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left palette */}
-        <aside className="w-56 bg-slate-900 border-r border-slate-700 flex flex-col shrink-0">
-          <div className="p-3 border-b border-slate-700">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Nodes</p>
-          </div>
-          <div className="flex-1 p-3 flex items-center justify-center">
-            <p className="text-xs text-slate-600 text-center">Coming next step</p>
-          </div>
-        </aside>
+        <LogicPalette />
 
-        {/* Canvas */}
         <div className="flex-1 bg-slate-950 relative overflow-hidden">
           {activeMcu && activeFlow && (
             <McuFlowCanvas
@@ -213,8 +291,7 @@ function LogicPanelInner() {
           )}
         </div>
 
-        {/* Right config sidebar */}
-        <aside className="w-64 bg-slate-900 border-l border-slate-700 flex flex-col shrink-0">
+        <aside className="w-60 bg-slate-900 border-l border-slate-700 flex flex-col shrink-0">
           <div className="p-3 border-b border-slate-700">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
               {activeMcu
@@ -239,7 +316,9 @@ function LogicPanelInner() {
               </div>
             ) : (
               <div className="h-full flex items-center justify-center">
-                <p className="text-xs text-slate-600 text-center">Select a node to configure it</p>
+                <p className="text-xs text-slate-600 text-center">
+                  Select a node to configure it
+                </p>
               </div>
             )}
           </div>
@@ -251,8 +330,10 @@ function LogicPanelInner() {
 
 export default function LogicPanel() {
   return (
-    <ReactFlowProvider>
-      <LogicPanelInner />
-    </ReactFlowProvider>
+    <LogicDnDProvider>
+      <ReactFlowProvider>
+        <LogicPanelInner />
+      </ReactFlowProvider>
+    </LogicDnDProvider>
   );
 }

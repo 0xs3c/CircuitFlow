@@ -28,7 +28,18 @@ function getComponent(node: Node): PlacedComponent | null {
 
 function isMcu(node: Node): boolean {
   const comp = getComponent(node);
-  return comp?.definition.category === "MCU";
+  if (!comp) return false;
+  const cat  = comp.definition.category?.toLowerCase() ?? "";
+  const tags = comp.definition.tags?.map((t) => t.toLowerCase()) ?? [];
+  return (
+    cat === "mcu" ||
+    cat.includes("microcontroller") ||
+    tags.includes("mcu") ||
+    tags.includes("microcontroller") ||
+    tags.includes("esp32") ||
+    tags.includes("stm32") ||
+    tags.includes("arduino")
+  );
 }
 
 export function extractHardwareMap(nodes: Node[], edges: Edge[]): HardwareMap {
@@ -54,7 +65,7 @@ export function extractHardwareMap(nodes: Node[], edges: Edge[]): HardwareMap {
       const peerNode = nodes.find((n) => n.id === peerNodeId);
       if (!peerNode || peerNode.type !== "componentNode") continue;
 
-      const mcuPin  = mcuComp.definition.pins.find((p) => p.id === mcuPinId);
+      const mcuPin   = mcuComp.definition.pins.find((p) => p.id === mcuPinId);
       const peerComp = getComponent(peerNode);
       if (!mcuPin || !peerComp) continue;
 
@@ -75,7 +86,7 @@ export function extractHardwareMap(nodes: Node[], edges: Edge[]): HardwareMap {
     }
 
     const wiredComponents: WiredComponent[] = [];
-    const connectedMcuIds: string[] = [];
+    const connectedMcuIds: string[]         = [];
 
     for (const [peerNodeId, { node: peerNode, connections }] of componentMap) {
       const peerComp = getComponent(peerNode)!;
