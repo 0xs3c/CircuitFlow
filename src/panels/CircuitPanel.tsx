@@ -100,7 +100,7 @@ function restoreNodes(
 
 function CircuitCanvas() {
   const { addComponent, selectComponent } = useCircuitStore();
-  const { currentProject, setCurrentProject } = useProjectStore();
+  const { currentProject, setCurrentProject, updateProjectCanvas } = useProjectStore();
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const { screenToFlowPosition, fitView, zoomIn, zoomOut } = useReactFlow();
@@ -310,13 +310,19 @@ function CircuitCanvas() {
     }
   }, [currentProject, nodes, edges]);
 
-  // ── Auto-save every 30 seconds ────────────────────────────────────────────
+  // ── Sync canvas to store immediately so other tabs see changes ────────────
+  useEffect(() => {
+    if (!currentProject) return;
+    updateProjectCanvas(serializeNodes(nodes), edges);
+  }, [nodes, edges]);
+
+  // ── Auto-save every 5 seconds ─────────────────────────────────────────────
   useEffect(() => {
     if (!currentProject) return;
     const interval = setInterval(() => {
       saveProject(currentProject.id, serializeNodes(nodes), edges)
         .catch(console.error);
-    }, 30_000);
+    }, 5_000);
     return () => clearInterval(interval);
   }, [currentProject, nodes, edges]);
 
